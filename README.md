@@ -19,9 +19,14 @@ start filediff.html        # Windows
 
 Or drag the file onto a browser window. No build step, no dependencies.
 
-- Click **Open Left** / **Open Right**, or drag-and-drop two files anywhere on the page.
+- **Open Left ▾** / **Open Right ▾** → pick **File…** or **Folder…**.
+- Or drag-and-drop one/two files **or** two folders anywhere on the page.
+- In folder mode, the file list at the top shows every path with a status icon
+  (`=` identical, `≠` differs, `←` only-left, `→` only-right). Click a row to
+  open that file pair in the diff view.
 - Click `→` / `←` in the middle gutter to merge each hunk.
-- **Save Left** / **Save Right** writes back to the original file (in Chromium/Edge/Safari), or downloads the modified file elsewhere.
+- **Save Left** / **Save Right** writes back to the original file (in Chromium/Edge),
+  including writing new files into a folder when one side was missing.
 
 ## Native version (Python + Tk)
 
@@ -39,7 +44,7 @@ ln -s "$PWD/filediff" ~/.local/bin/filediff
 filediff left.txt right.txt
 ```
 
-## Features (both versions)
+## Features
 
 - Side-by-side panes with color-coded hunks
   - red = deleted (only on left)
@@ -50,6 +55,8 @@ filediff left.txt right.txt
 - Synchronized vertical scrolling
 - Save / Save As for each side
 - `F8` / `Shift+F8` to jump to next / previous diff
+- **Folder diff (browser version)**: open two folders, walk recursively,
+  per-file status, click-through to file diffs, save back to disk
 
 ## Requirements
 

@@ -39,6 +39,60 @@
   header.toolbar button:hover { background: #4a4a4a; }
   header.toolbar .spacer { flex: 1; }
   header.toolbar .title { font-weight: 600; margin-right: 12px; }
+  .menu-wrap { position: relative; }
+  .menu {
+    display: none; position: absolute; top: 100%; left: 0;
+    background: #3c3c3c; border: 1px solid #555;
+    border-radius: 4px; min-width: 140px; z-index: 100;
+    padding: 4px 0; margin-top: 2px;
+  }
+  .menu.open { display: flex; flex-direction: column; }
+  .menu button {
+    background: transparent; border: none; border-radius: 0;
+    text-align: left; padding: 6px 12px; font-size: 13px;
+    color: #f0f0f0; cursor: pointer;
+  }
+  .menu button:hover { background: #4a4a4a; }
+  .filelist {
+    background: #fafafa; border-bottom: 1px solid #ccc;
+    max-height: 35vh; overflow-y: auto; flex-shrink: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+  .filelist.hidden { display: none; }
+  .filelist-header {
+    padding: 4px 10px; background: #ececec;
+    border-bottom: 1px solid #ddd;
+    display: flex; gap: 12px; align-items: center;
+    font-size: 12px; position: sticky; top: 0; z-index: 1;
+  }
+  .filelist-header label { cursor: pointer; }
+  .filelist-counts { color: #666; font-size: 11px; }
+  .file-row {
+    padding: 3px 10px; cursor: pointer;
+    display: flex; gap: 8px; align-items: center;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .file-row:hover { background: #e8f0fe; }
+  .file-row.selected { background: #cfe1ff; }
+  .file-row .file-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .status-label {
+    color: #666; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .file-row .status-icon { width: 14px; text-align: center; font-weight: 700; }
+  .file-row.status-identical            { color: #666; }
+  .file-row.status-identical .status-icon { color: #999; }
+  .file-row.status-differs              { background: rgba(255, 233, 176, 0.55); }
+  .file-row.status-differs .status-icon { color: #a76f00; }
+  .file-row.status-only-left            { background: rgba(255, 214, 214, 0.55); }
+  .file-row.status-only-left .status-icon { color: #b21f1f; }
+  .file-row.status-only-right           { background: rgba(214, 255, 214, 0.55); }
+  .file-row.status-only-right .status-icon { color: #1f8d1f; }
+  .file-row.selected.status-differs,
+  .file-row.selected.status-only-left,
+  .file-row.selected.status-only-right { background: #cfe1ff; }
+  .filelist-empty { padding: 12px; color: #888; font-style: italic; }
   .paths {
     display: flex; background: #d6d6d6;
     border-bottom: 1px solid #aaa; flex-shrink: 0;
@@ -119,8 +173,20 @@
 <body>
 <header class="toolbar">
   <span class="title">FileDiff</span>
-  <button id="openLeft">Open Left</button>
-  <button id="openRight">Open Right</button>
+  <div class="menu-wrap">
+    <button id="openLeftBtn" data-menu="openLeftMenu">Open Left ▾</button>
+    <div class="menu" id="openLeftMenu">
+      <button data-side="left" data-kind="file">File…</button>
+      <button data-side="left" data-kind="folder">Folder…</button>
+    </div>
+  </div>
+  <div class="menu-wrap">
+    <button id="openRightBtn" data-menu="openRightMenu">Open Right ▾</button>
+    <div class="menu" id="openRightMenu">
+      <button data-side="right" data-kind="file">File…</button>
+      <button data-side="right" data-kind="folder">Folder…</button>
+    </div>
+  </div>
   <button id="refresh">Refresh</button>
   <button id="prevDiff" title="Previous diff (Shift+F8)">← Prev</button>
   <button id="nextDiff" title="Next diff (F8)">Next →</button>
@@ -132,13 +198,23 @@
   <div id="leftPath" class="path">(no file)</div>
   <div id="rightPath" class="path">(no file)</div>
 </div>
+<div class="filelist hidden" id="filelist">
+  <div class="filelist-header">
+    <strong>Files</strong>
+    <span class="filelist-counts" id="filelistCounts"></span>
+    <span style="flex:1"></span>
+    <label><input type="checkbox" id="filterDiffsOnly" checked> Differences only</label>
+    <button id="closeFolderMode" style="background:#bbb; color:#222; border:1px solid #999; border-radius:3px; padding:2px 8px; font-size:11px; cursor:pointer;">Close folder mode</button>
+  </div>
+  <div id="filelistRows"></div>
+</div>
 <div class="container">
   <div class="pane" id="leftPane"><div class="inner" id="leftInner"></div></div>
   <div class="gutter" id="gutter"><div class="scroller" id="gutterInner"></div></div>
   <div class="pane" id="rightPane"><div class="inner" id="rightInner"></div></div>
 </div>
-<div class="status" id="status">Open two files to begin. Tip: drag &amp; drop two files anywhere.</div>
-<div class="drop-overlay" id="dropOverlay">Drop one or two files</div>
+<div class="status" id="status">Open two files or two folders to begin. Tip: drag &amp; drop files anywhere.</div>
+<div class="drop-overlay" id="dropOverlay">Drop two files or two folders</div>
 
 <script>
 "use strict";
@@ -146,10 +222,18 @@
 const LINE_HEIGHT = 18;
 
 const state = {
-  left: { name: null, lines: [], trailingNL: true, handle: null },
-  right: { name: null, lines: [], trailingNL: true, handle: null },
+  left:  { name: null, lines: [], trailingNL: true, handle: null,
+           dirHandle: null, dirName: null, fileMap: null,
+           // fileMap entries: path -> { handle?, file?, relPath } where
+           // handle is a FileSystemFileHandle (FSA, writable), or
+           // file is a plain File (input fallback, read-only).
+         },
+  right: { name: null, lines: [], trailingNL: true, handle: null,
+           dirHandle: null, dirName: null, fileMap: null },
   hunks: [],
   syncing: false,
+  folderEntries: [],   // [{path, status, leftEntry, rightEntry}]
+  currentPath: null,
 };
 
 // ----- DOM refs -----
@@ -163,6 +247,10 @@ const statusBar = document.getElementById("status");
 const leftPathEl = document.getElementById("leftPath");
 const rightPathEl = document.getElementById("rightPath");
 const dropOverlay = document.getElementById("dropOverlay");
+const filelistEl = document.getElementById("filelist");
+const filelistRows = document.getElementById("filelistRows");
+const filelistCounts = document.getElementById("filelistCounts");
+const filterDiffsOnly = document.getElementById("filterDiffsOnly");
 
 // ----- Diff algorithm: LCS DP -> matching blocks -> opcodes ----------
 function matchingBlocks(a, b) {
@@ -399,12 +487,10 @@ function parseContent(text) {
 }
 
 async function pickAndLoad(side) {
+  exitFolderMode(side); // single-file open clears folder mode for that side
   if (window.showOpenFilePicker) {
     try {
-      const [handle] = await window.showOpenFilePicker({
-        multiple: false,
-        types: [{ description: "Text", accept: { "text/*": [] } }],
-      });
+      const [handle] = await window.showOpenFilePicker({ multiple: false });
       const file = await handle.getFile();
       const text = await file.text();
       const parsed = parseContent(text);
@@ -413,6 +499,7 @@ async function pickAndLoad(side) {
       state[side].trailingNL = parsed.trailingNL;
       state[side].handle = handle;
       setPathLabel(side, file.name);
+      maybeHideFilelist();
       recompute();
       return;
     } catch (err) {
@@ -433,6 +520,7 @@ async function pickAndLoad(side) {
     state[side].trailingNL = parsed.trailingNL;
     state[side].handle = null;
     setPathLabel(side, f.name);
+    maybeHideFilelist();
     recompute();
   });
   input.click();
@@ -444,6 +532,240 @@ function setPathLabel(side, name) {
   el.title = name;
 }
 
+// ----- Folder I/O -----
+async function pickAndLoadFolder(side) {
+  if (window.showDirectoryPicker) {
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      const fileMap = new Map();
+      statusBar.textContent = `Walking ${side} folder…`;
+      await walkFSADir(dirHandle, "", fileMap);
+      state[side].dirHandle = dirHandle;
+      state[side].dirName = dirHandle.name;
+      state[side].fileMap = fileMap;
+      setPathLabel(side, dirHandle.name + "/");
+      await refreshFolderDiff();
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      console.warn(err);
+    }
+  }
+  // Fallback: webkitdirectory input (read-only — save will download)
+  const input = document.createElement("input");
+  input.type = "file";
+  input.webkitdirectory = true;
+  input.multiple = true;
+  input.addEventListener("change", async () => {
+    const files = Array.from(input.files);
+    if (!files.length) return;
+    const root = files[0].webkitRelativePath.split("/")[0];
+    const fileMap = new Map();
+    for (const f of files) {
+      const rel = f.webkitRelativePath.split("/").slice(1).join("/");
+      fileMap.set(rel, { file: f, relPath: rel });
+    }
+    state[side].dirHandle = null;
+    state[side].dirName = root;
+    state[side].fileMap = fileMap;
+    setPathLabel(side, root + "/");
+    await refreshFolderDiff();
+  });
+  input.click();
+}
+
+async function walkFSADir(dirHandle, prefix, out) {
+  for await (const [name, h] of dirHandle.entries()) {
+    if (name.startsWith(".")) continue; // skip hidden
+    const path = prefix ? prefix + "/" + name : name;
+    if (h.kind === "directory") {
+      await walkFSADir(h, path, out);
+    } else {
+      out.set(path, { handle: h, relPath: path });
+    }
+    if (out.size > 20000) {
+      throw new Error("folder has too many files (>20000)");
+    }
+  }
+}
+
+async function entryToFile(entry) {
+  if (entry.handle) return entry.handle.getFile();
+  return entry.file;
+}
+
+async function compareEntries(left, right) {
+  if (!left) return "only-right";
+  if (!right) return "only-left";
+  const [lf, rf] = await Promise.all([entryToFile(left), entryToFile(right)]);
+  if (lf.size !== rf.size) return "differs";
+  if (lf.size === 0) return "identical";
+  const [la, ra] = await Promise.all([lf.arrayBuffer(), rf.arrayBuffer()]);
+  const la8 = new Uint8Array(la), ra8 = new Uint8Array(ra);
+  for (let i = 0; i < la8.length; i++) {
+    if (la8[i] !== ra8[i]) return "differs";
+  }
+  return "identical";
+}
+
+async function refreshFolderDiff() {
+  const L = state.left.fileMap, R = state.right.fileMap;
+  if (!L && !R) return;
+  filelistEl.classList.remove("hidden");
+  const paths = new Set();
+  if (L) for (const k of L.keys()) paths.add(k);
+  if (R) for (const k of R.keys()) paths.add(k);
+  const sorted = [...paths].sort();
+  statusBar.textContent = `Comparing ${sorted.length} paths…`;
+
+  const entries = [];
+  let counts = { identical: 0, differs: 0, "only-left": 0, "only-right": 0 };
+
+  const CONCURRENCY = 8;
+  let idx = 0;
+  async function worker() {
+    while (idx < sorted.length) {
+      const my = idx++;
+      const path = sorted[my];
+      const le = L ? L.get(path) : null;
+      const re = R ? R.get(path) : null;
+      let status;
+      try {
+        status = await compareEntries(le, re);
+      } catch (e) {
+        status = "differs"; // unreadable -> treat as differing
+      }
+      entries[my] = { path, status, leftEntry: le, rightEntry: re };
+      counts[status]++;
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+  state.folderEntries = entries;
+  renderFileList(counts);
+  statusBar.textContent =
+    `${counts.identical} identical, ${counts.differs} differ, ` +
+    `${counts["only-left"]} only left, ${counts["only-right"]} only right. ` +
+    `Click a file to view its diff.`;
+}
+
+function renderFileList(counts) {
+  const onlyDiffs = filterDiffsOnly.checked;
+  const rows = state.folderEntries
+    .filter(e => !onlyDiffs || e.status !== "identical")
+    .map(e => {
+      const icon = e.status === "identical" ? "="
+                 : e.status === "differs"   ? "≠"
+                 : e.status === "only-left" ? "←"
+                 : "→";
+      const sel = state.currentPath === e.path ? " selected" : "";
+      return `<div class="file-row status-${e.status}${sel}" data-path="${escapeHTML(e.path)}">
+        <span class="status-icon">${icon}</span>
+        <span class="file-path">${escapeHTML(e.path)}</span>
+        <span class="status-label">${e.status.replace("-", " ")}</span>
+      </div>`;
+    }).join("");
+  filelistRows.innerHTML = rows ||
+    `<div class="filelist-empty">No ${onlyDiffs ? "differing " : ""}files.</div>`;
+  if (counts) {
+    filelistCounts.textContent =
+      `${counts.identical}= / ${counts.differs}≠ / ` +
+      `${counts["only-left"]}← / ${counts["only-right"]}→`;
+  }
+}
+
+filterDiffsOnly.addEventListener("change", () => renderFileList());
+
+filelistRows.addEventListener("click", async (e) => {
+  const row = e.target.closest(".file-row");
+  if (!row) return;
+  const path = row.dataset.path;
+  const entry = state.folderEntries.find(x => x.path === path);
+  if (!entry) return;
+  await loadFolderEntry(entry);
+});
+
+async function loadFolderEntry(entry) {
+  state.currentPath = entry.path;
+  const sides = [["left", entry.leftEntry], ["right", entry.rightEntry]];
+  for (const [side, e] of sides) {
+    if (e) {
+      const f = await entryToFile(e);
+      const text = await f.text();
+      const parsed = parseContent(text);
+      state[side].lines = parsed.lines;
+      state[side].trailingNL = parsed.trailingNL;
+      state[side].name = entry.path;
+      state[side].handle = e.handle || null;
+      const root = state[side].dirName || "";
+      setPathLabel(side, root + "/" + entry.path);
+    } else {
+      state[side].lines = [];
+      state[side].trailingNL = true;
+      state[side].name = entry.path;
+      state[side].handle = null;
+      const root = state[side].dirName || "";
+      setPathLabel(side, root + "/" + entry.path + "  (missing)");
+    }
+  }
+  // re-render filelist to update selection highlight
+  renderFileList();
+  recompute();
+}
+
+function exitFolderMode(side) {
+  if (!side || side === "left") {
+    state.left.dirHandle = null;
+    state.left.dirName = null;
+    state.left.fileMap = null;
+  }
+  if (!side || side === "right") {
+    state.right.dirHandle = null;
+    state.right.dirName = null;
+    state.right.fileMap = null;
+  }
+  if (!state.left.fileMap && !state.right.fileMap) {
+    state.folderEntries = [];
+    state.currentPath = null;
+    filelistEl.classList.add("hidden");
+  }
+}
+
+function maybeHideFilelist() {
+  if (!state.left.fileMap && !state.right.fileMap) {
+    filelistEl.classList.add("hidden");
+  }
+}
+
+document.getElementById("closeFolderMode").addEventListener("click", () => {
+  exitFolderMode();
+  filelistEl.classList.add("hidden");
+  statusBar.textContent = "Folder mode closed.";
+});
+
+// Walk to subdirectory handle, creating intermediate dirs as needed.
+async function descendDir(rootHandle, relPath) {
+  const parts = relPath.split("/");
+  const fileName = parts.pop();
+  let dir = rootHandle;
+  for (const part of parts) {
+    dir = await dir.getDirectoryHandle(part, { create: true });
+  }
+  return { dir, fileName };
+}
+
+async function refreshOneEntryStatus(path) {
+  const entry = state.folderEntries.find(e => e.path === path);
+  if (!entry) return;
+  try {
+    entry.status = await compareEntries(entry.leftEntry, entry.rightEntry);
+  } catch { entry.status = "differs"; }
+  // Recompute counts
+  const counts = { identical: 0, differs: 0, "only-left": 0, "only-right": 0 };
+  for (const e of state.folderEntries) counts[e.status]++;
+  renderFileList(counts);
+}
+
 async function saveSide(side) {
   const s = state[side];
   if (!s.name) {
@@ -453,18 +775,41 @@ async function saveSide(side) {
   let content = s.lines.join("\n");
   if (s.trailingNL && s.lines.length) content += "\n";
 
+  // 1. Direct handle (set when we opened the file via FSA, or by previous Save As)
   if (s.handle && s.handle.createWritable) {
     try {
       const writable = await s.handle.createWritable();
       await writable.write(content);
       await writable.close();
       statusBar.textContent = `Saved ${side} → ${s.name}`;
+      if (state.currentPath) await refreshOneEntryStatus(state.currentPath);
       return;
     } catch (err) {
-      console.warn("In-place save failed; falling back to download.", err);
+      console.warn("In-place save failed; falling back.", err);
     }
   }
 
+  // 2. Folder mode with FSA directory handle: descend and write.
+  //    Useful when we're saving a path that was "missing" on this side.
+  if (s.dirHandle && state.currentPath) {
+    try {
+      const { dir, fileName } = await descendDir(s.dirHandle, state.currentPath);
+      const fh = await dir.getFileHandle(fileName, { create: true });
+      const writable = await fh.createWritable();
+      await writable.write(content);
+      await writable.close();
+      s.handle = fh;
+      // Register in fileMap so subsequent operations find it
+      if (s.fileMap) s.fileMap.set(state.currentPath, { handle: fh, relPath: state.currentPath });
+      statusBar.textContent = `Saved ${side} → ${s.dirName}/${state.currentPath}`;
+      await refreshOneEntryStatus(state.currentPath);
+      return;
+    } catch (err) {
+      console.warn("Folder-mode save failed; falling back.", err);
+    }
+  }
+
+  // 3. Save As picker
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({ suggestedName: s.name });
@@ -482,22 +827,48 @@ async function saveSide(side) {
     }
   }
 
-  // Last resort: download
+  // 4. Last resort: download
   const blob = new Blob([content], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = s.name;
+  a.href = url; a.download = s.name.split("/").pop();
   document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  statusBar.textContent = `Downloaded ${s.name} (browser cannot overwrite original; replace it manually).`;
+  statusBar.textContent =
+    `Downloaded ${a.download} (browser cannot overwrite original; replace it manually).`;
 }
 
-document.getElementById("openLeft").addEventListener("click", () => pickAndLoad("left"));
-document.getElementById("openRight").addEventListener("click", () => pickAndLoad("right"));
+// ----- Open menus -----
+function closeAllMenus() {
+  document.querySelectorAll(".menu.open").forEach(m => m.classList.remove("open"));
+}
+document.querySelectorAll("[data-menu]").forEach(btn => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const menu = document.getElementById(btn.dataset.menu);
+    const wasOpen = menu.classList.contains("open");
+    closeAllMenus();
+    if (!wasOpen) menu.classList.add("open");
+  });
+});
+document.querySelectorAll(".menu button").forEach(btn => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeAllMenus();
+    const side = btn.dataset.side;
+    if (btn.dataset.kind === "folder") pickAndLoadFolder(side);
+    else                                pickAndLoad(side);
+  });
+});
+document.addEventListener("click", closeAllMenus);
+
 document.getElementById("saveLeft").addEventListener("click", () => saveSide("left"));
 document.getElementById("saveRight").addEventListener("click", () => saveSide("right"));
-document.getElementById("refresh").addEventListener("click", recompute);
+document.getElementById("refresh").addEventListener("click", () => {
+  if (state.left.fileMap || state.right.fileMap) refreshFolderDiff();
+  else recompute();
+});
 
 // ----- Drag & drop -----
 let dragDepth = 0;
@@ -515,9 +886,45 @@ document.addEventListener("drop", async (e) => {
   e.preventDefault();
   dragDepth = 0;
   dropOverlay.classList.remove("show");
+
+  const items = Array.from(e.dataTransfer.items || []).slice(0, 2);
+  const entries = items.map(it => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+
+  if (entries.some(en => en && en.isDirectory)) {
+    // Folder drop — walk each entry into a fileMap.
+    for (let i = 0; i < entries.length; i++) {
+      const side = i === 0 ? "left" : "right";
+      const en = entries[i];
+      if (en.isDirectory) {
+        const fileMap = new Map();
+        await walkWebkitDir(en, "", fileMap);
+        state[side].dirHandle = null;
+        state[side].dirName = en.name;
+        state[side].fileMap = fileMap;
+        setPathLabel(side, en.name + "/");
+      } else {
+        const file = await new Promise((r, j) => en.file(r, j));
+        const text = await file.text();
+        const parsed = parseContent(text);
+        state[side].name = file.name;
+        state[side].lines = parsed.lines;
+        state[side].trailingNL = parsed.trailingNL;
+        state[side].handle = null;
+        state[side].fileMap = null;
+        state[side].dirHandle = null;
+        state[side].dirName = null;
+        setPathLabel(side, file.name);
+      }
+    }
+    await refreshFolderDiff();
+    return;
+  }
+
+  // File drop (one or two files)
   const files = Array.from(e.dataTransfer.files).slice(0, 2);
   for (let i = 0; i < files.length; i++) {
     const side = i === 0 ? "left" : "right";
+    exitFolderMode(side);
     const text = await files[i].text();
     const parsed = parseContent(text);
     state[side].name = files[i].name;
@@ -526,8 +933,29 @@ document.addEventListener("drop", async (e) => {
     state[side].handle = null;
     setPathLabel(side, files[i].name);
   }
+  maybeHideFilelist();
   recompute();
 });
+
+async function walkWebkitDir(dirEntry, prefix, out) {
+  const reader = dirEntry.createReader();
+  const all = [];
+  while (true) {
+    const batch = await new Promise((r, j) => reader.readEntries(r, j));
+    if (!batch.length) break;
+    all.push(...batch);
+  }
+  for (const child of all) {
+    if (child.name.startsWith(".")) continue;
+    const path = prefix ? prefix + "/" + child.name : child.name;
+    if (child.isDirectory) {
+      await walkWebkitDir(child, path, out);
+    } else {
+      const file = await new Promise((r, j) => child.file(r, j));
+      out.set(path, { file, relPath: path });
+    }
+  }
+}
 
 // ----- Keyboard shortcuts -----
 document.addEventListener("keydown", (e) => {
