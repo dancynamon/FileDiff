@@ -93,6 +93,16 @@
   .file-row.selected.status-only-left,
   .file-row.selected.status-only-right { background: #cfe1ff; }
   .filelist-empty { padding: 12px; color: #888; font-style: italic; }
+  .binary-notice {
+    padding: 32px 20px; text-align: center; color: #555;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px; line-height: 1.6;
+  }
+  .binary-notice strong {
+    font-size: 14px; color: #333;
+    display: block; margin-bottom: 6px;
+  }
+  .binary-notice em { color: #888; font-style: normal; }
   .paths {
     display: flex; background: #d6d6d6;
     border-bottom: 1px solid #aaa; flex-shrink: 0;
@@ -224,17 +234,31 @@ const LINE_HEIGHT = 18;
 const state = {
   left:  { name: null, lines: [], trailingNL: true, handle: null,
            dirHandle: null, dirName: null, fileMap: null,
-           // fileMap entries: path -> { handle?, file?, relPath } where
-           // handle is a FileSystemFileHandle (FSA, writable), or
-           // file is a plain File (input fallback, read-only).
+           binary: false, binarySize: 0, oversized: false, missing: false,
          },
   right: { name: null, lines: [], trailingNL: true, handle: null,
-           dirHandle: null, dirName: null, fileMap: null },
+           dirHandle: null, dirName: null, fileMap: null,
+           binary: false, binarySize: 0, oversized: false, missing: false,
+         },
   hunks: [],
   syncing: false,
-  folderEntries: [],   // [{path, status, leftEntry, rightEntry}]
+  folderEntries: [],
   currentPath: null,
 };
+
+const TEXT_LIMIT = 5 * 1024 * 1024;  // bigger than this → treat as binary
+
+function detectBinary(u8) {
+  const n = Math.min(u8.length, 4096);
+  if (n === 0) return false;
+  let nonPrint = 0;
+  for (let i = 0; i < n; i++) {
+    const c = u8[i];
+    if (c === 0) return true;                      // NUL byte → binary
+    if (c < 9 || (c > 13 && c < 32) || c === 127) nonPrint++;
+  }
+  return nonPrint / n > 0.30;
+}
 
 // ----- DOM refs -----
 const leftPane = document.getElementById("leftPane");
@@ -327,7 +351,38 @@ function escapeHTML(s) {
   return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 }
 
+function renderBinaryView() {
+  function panel(s) {
+    if (s.missing) {
+      return `<div class="binary-notice">(missing on this side)</div>`;
+    }
+    if (s.binary) {
+      const sz = (s.binarySize || 0).toLocaleString();
+      const tag = s.oversized ? "Large file" : "Binary file";
+      const sub = s.oversized
+        ? "Text diff suppressed for files over 5 MB."
+        : "Not displayable as text.";
+      return `<div class="binary-notice"><strong>${tag}</strong>${sz} bytes<br><em>${sub}</em></div>`;
+    }
+    return `<div class="binary-notice"><strong>Text file</strong>${s.lines.length} lines<br><em>Other side is binary; diff suppressed.</em></div>`;
+  }
+  leftInner.innerHTML = panel(state.left);
+  rightInner.innerHTML = panel(state.right);
+  state.hunks = [];
+  gutterInner.innerHTML = "";
+  gutterInner.style.height = "0px";
+  if (state.left.binary && state.right.binary) {
+    statusBar.textContent = "Binary files — text diff not available.";
+  } else if (state.left.binary || state.right.binary) {
+    statusBar.textContent = "One side is binary — text diff not available.";
+  }
+}
+
 function recompute() {
+  if (state.left.binary || state.right.binary) {
+    renderBinaryView();
+    return;
+  }
   const a = state.left.lines, b = state.right.lines;
   const ops = getOpcodes(a, b);
 
@@ -417,6 +472,7 @@ function renderGutter() {
 
 // ----- Merge actions -----
 function mergeToRight(idx) {
+  if (state.left.binary || state.right.binary) return;
   const h = state.hunks[idx];
   if (!h) return;
   const repl = state.left.lines.slice(h.i1, h.i2);
@@ -425,6 +481,7 @@ function mergeToRight(idx) {
   recompute();
 }
 function mergeToLeft(idx) {
+  if (state.left.binary || state.right.binary) return;
   const h = state.hunks[idx];
   if (!h) return;
   const repl = state.right.lines.slice(h.j1, h.j2);
@@ -486,18 +543,52 @@ function parseContent(text) {
   return { lines: text.split(/\r?\n/).slice(0, trailingNL ? -1 : undefined), trailingNL };
 }
 
+async function readSideFile(side, fileOrHandle, displayName) {
+  const file = fileOrHandle.getFile ? await fileOrHandle.getFile() : fileOrHandle;
+  const s = state[side];
+  s.name = displayName;
+  s.missing = false;
+  s.oversized = false;
+  s.binary = false;
+  s.binarySize = 0;
+  if (file.size > TEXT_LIMIT) {
+    s.binary = true; s.oversized = true; s.binarySize = file.size;
+    s.lines = []; s.trailingNL = true;
+    return;
+  }
+  const buf = await file.arrayBuffer();
+  const u8 = new Uint8Array(buf);
+  if (detectBinary(u8)) {
+    s.binary = true; s.binarySize = file.size;
+    s.lines = []; s.trailingNL = true;
+    return;
+  }
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+  const parsed = parseContent(text);
+  s.lines = parsed.lines;
+  s.trailingNL = parsed.trailingNL;
+}
+
+function setMissingSide(side, displayName) {
+  const s = state[side];
+  s.name = displayName;
+  s.lines = [];
+  s.trailingNL = true;
+  s.handle = null;
+  s.binary = false;
+  s.binarySize = 0;
+  s.oversized = false;
+  s.missing = true;
+}
+
 async function pickAndLoad(side) {
   exitFolderMode(side); // single-file open clears folder mode for that side
   if (window.showOpenFilePicker) {
     try {
       const [handle] = await window.showOpenFilePicker({ multiple: false });
-      const file = await handle.getFile();
-      const text = await file.text();
-      const parsed = parseContent(text);
-      state[side].name = file.name;
-      state[side].lines = parsed.lines;
-      state[side].trailingNL = parsed.trailingNL;
       state[side].handle = handle;
+      const file = await handle.getFile();
+      await readSideFile(side, handle, file.name);
       setPathLabel(side, file.name);
       maybeHideFilelist();
       recompute();
@@ -513,12 +604,8 @@ async function pickAndLoad(side) {
   input.addEventListener("change", async () => {
     const f = input.files[0];
     if (!f) return;
-    const text = await f.text();
-    const parsed = parseContent(text);
-    state[side].name = f.name;
-    state[side].lines = parsed.lines;
-    state[side].trailingNL = parsed.trailingNL;
     state[side].handle = null;
+    await readSideFile(side, f, f.name);
     setPathLabel(side, f.name);
     maybeHideFilelist();
     recompute();
@@ -689,26 +776,16 @@ async function loadFolderEntry(entry) {
   state.currentPath = entry.path;
   const sides = [["left", entry.leftEntry], ["right", entry.rightEntry]];
   for (const [side, e] of sides) {
+    const root = state[side].dirName || "";
     if (e) {
-      const f = await entryToFile(e);
-      const text = await f.text();
-      const parsed = parseContent(text);
-      state[side].lines = parsed.lines;
-      state[side].trailingNL = parsed.trailingNL;
-      state[side].name = entry.path;
       state[side].handle = e.handle || null;
-      const root = state[side].dirName || "";
+      await readSideFile(side, e.handle || e.file, entry.path);
       setPathLabel(side, root + "/" + entry.path);
     } else {
-      state[side].lines = [];
-      state[side].trailingNL = true;
-      state[side].name = entry.path;
-      state[side].handle = null;
-      const root = state[side].dirName || "";
+      setMissingSide(side, entry.path);
       setPathLabel(side, root + "/" + entry.path + "  (missing)");
     }
   }
-  // re-render filelist to update selection highlight
   renderFileList();
   recompute();
 }
@@ -770,6 +847,10 @@ async function saveSide(side) {
   const s = state[side];
   if (!s.name) {
     alert(`No ${side} file loaded.`);
+    return;
+  }
+  if (s.binary) {
+    alert(`Cannot save: ${side} is a binary file (text content was not loaded).`);
     return;
   }
   let content = s.lines.join("\n");
@@ -925,12 +1006,8 @@ document.addEventListener("drop", async (e) => {
   for (let i = 0; i < files.length; i++) {
     const side = i === 0 ? "left" : "right";
     exitFolderMode(side);
-    const text = await files[i].text();
-    const parsed = parseContent(text);
-    state[side].name = files[i].name;
-    state[side].lines = parsed.lines;
-    state[side].trailingNL = parsed.trailingNL;
     state[side].handle = null;
+    await readSideFile(side, files[i], files[i].name);
     setPathLabel(side, files[i].name);
   }
   maybeHideFilelist();
