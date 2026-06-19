@@ -1,31 +1,45 @@
 # FileDiff
 
-A visual side-by-side file diff and merge GUI. Pure Python / Tkinter — no
-external dependencies.
+A visual side-by-side file diff and merge GUI. Two flavours, same UX:
 
-## Run
+| | runtime | install needed | save back to original |
+|---|---|---|---|
+| `filediff.html` | any modern browser | **none** — double-click the file | yes, in Chromium/Edge/Safari (File System Access API); download fallback elsewhere |
+| `filediff`      | Python 3 + Tk      | `python3-tk` on Linux; bundled on macOS/Windows installs | yes |
 
-The shebang and exec bit are set, so just run it directly:
+## Browser version (recommended — OS-independent)
+
+Just open `filediff.html` in any browser:
 
 ```
-./filediff                          # open empty, pick files from File menu
+open filediff.html         # macOS
+xdg-open filediff.html     # Linux
+start filediff.html        # Windows
+```
+
+Or drag the file onto a browser window. No build step, no dependencies.
+
+- Click **Open Left** / **Open Right**, or drag-and-drop two files anywhere on the page.
+- Click `→` / `←` in the middle gutter to merge each hunk.
+- **Save Left** / **Save Right** writes back to the original file (in Chromium/Edge/Safari), or downloads the modified file elsewhere.
+
+## Native version (Python + Tk)
+
+The shebang and exec bit are set, so run it directly:
+
+```
+./filediff                          # empty, pick files from File menu
 ./filediff left.txt right.txt       # open two files directly
 ```
 
-To install as a system command, drop it on your `PATH`:
+To install as a system command:
 
 ```
 ln -s "$PWD/filediff" ~/.local/bin/filediff
 filediff left.txt right.txt
 ```
 
-Or invoke via the interpreter explicitly:
-
-```
-python3 filediff left.txt right.txt
-```
-
-## Features
+## Features (both versions)
 
 - Side-by-side panes with color-coded hunks
   - red = deleted (only on left)
@@ -33,16 +47,11 @@ python3 filediff left.txt right.txt
   - yellow = changed on both sides
   - grey = padding to keep panes aligned
 - Per-hunk merge arrows in the middle gutter
-  - `→` push the left hunk into the right file
-  - `←` push the right hunk into the left file
-- Synchronized vertical scrolling and mouse-wheel
+- Synchronized vertical scrolling
 - Save / Save As for each side
 - `F8` / `Shift+F8` to jump to next / previous diff
 
 ## Requirements
 
-Python 3.9+ with Tkinter. On most Linux distros:
-
-```
-sudo apt-get install python3-tk
-```
+- **Browser version**: any modern browser. Save-back-to-original needs File System Access API (Chrome/Edge 86+, Safari 15.2+). Older browsers fall back to a download.
+- **Python version**: Python 3.9+ with Tkinter. On Linux: `sudo apt-get install python3-tk`.

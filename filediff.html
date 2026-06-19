@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FileDiff</title>
+<style>
+  :root {
+    --bg-equal: #ffffff;
+    --bg-delete: #ffd6d6;
+    --bg-insert: #d6ffd6;
+    --bg-replace: #ffe9b0;
+    --bg-pad: #ececec;
+    --fg-pad: #bbbbbb;
+    --bg-hunk: #fff5b8;
+    --border-hunk: #c9b85c;
+    --arrow-right: #0a66c2;
+    --arrow-left: #c2660a;
+    --line-height: 18px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 Roboto, sans-serif;
+    color: #222;
+  }
+  header.toolbar {
+    background: #2d2d30; color: #f0f0f0;
+    padding: 6px 10px;
+    display: flex; gap: 6px; align-items: center;
+    flex-shrink: 0;
+  }
+  header.toolbar button {
+    background: #3c3c3c; color: #f0f0f0;
+    border: 1px solid #555; border-radius: 4px;
+    padding: 5px 10px; cursor: pointer; font-size: 13px;
+  }
+  header.toolbar button:hover { background: #4a4a4a; }
+  header.toolbar .spacer { flex: 1; }
+  header.toolbar .title { font-weight: 600; margin-right: 12px; }
+  .paths {
+    display: flex; background: #d6d6d6;
+    border-bottom: 1px solid #aaa; flex-shrink: 0;
+  }
+  .path {
+    flex: 1; padding: 4px 8px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .path:first-child { border-right: 60px solid #c4c4c4; }
+  .container {
+    flex: 1;
+    display: flex; min-height: 0;
+    border-top: 1px solid #ccc;
+  }
+  .pane {
+    flex: 1; min-width: 0;
+    overflow: auto;
+    background: #fff;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: var(--line-height);
+  }
+  .pane .inner { white-space: pre; min-width: 100%; }
+  .line { display: flex; min-height: var(--line-height); }
+  .lineno {
+    width: 44px; flex-shrink: 0;
+    color: #888; text-align: right; padding-right: 8px;
+    user-select: none; background: #f7f7f7;
+    border-right: 1px solid #e0e0e0;
+  }
+  .content { padding: 0 6px; flex: 1; }
+  .line.equal   { background: var(--bg-equal); }
+  .line.delete  { background: var(--bg-delete); }
+  .line.insert  { background: var(--bg-insert); }
+  .line.replace { background: var(--bg-replace); }
+  .line.pad     { background: var(--bg-pad); color: var(--fg-pad); }
+  .line.pad .lineno { background: #e4e4e4; color: #bbb; }
+  .gutter {
+    width: 60px; flex-shrink: 0;
+    background: #f4f4f4;
+    overflow: hidden; position: relative;
+    border-left: 1px solid #ccc; border-right: 1px solid #ccc;
+  }
+  .gutter .scroller { position: relative; }
+  .hunk-marker {
+    position: absolute; left: 3px; right: 3px;
+    background: var(--bg-hunk);
+    border: 1px solid var(--border-hunk);
+    border-radius: 3px;
+    display: flex; align-items: center; justify-content: space-around;
+  }
+  .arrow {
+    cursor: pointer; font-weight: 700; font-size: 16px;
+    user-select: none; line-height: 1;
+    padding: 0 4px;
+  }
+  .arrow.right { color: var(--arrow-right); }
+  .arrow.left  { color: var(--arrow-left); }
+  .arrow:hover { transform: scale(1.2); }
+  .status {
+    flex-shrink: 0;
+    background: #eee; border-top: 1px solid #ccc;
+    padding: 4px 10px; font-size: 12px; color: #444;
+  }
+  .drop-overlay {
+    position: fixed; inset: 0;
+    background: rgba(10, 102, 194, 0.15);
+    border: 4px dashed #0a66c2;
+    display: none; align-items: center; justify-content: center;
+    font-size: 24px; font-weight: 600; color: #0a66c2;
+    pointer-events: none; z-index: 1000;
+  }
+  .drop-overlay.show { display: flex; }
+</style>
+</head>
+<body>
+<header class="toolbar">
+  <span class="title">FileDiff</span>
+  <button id="openLeft">Open Left</button>
+  <button id="openRight">Open Right</button>
+  <button id="refresh">Refresh</button>
+  <button id="prevDiff" title="Previous diff (Shift+F8)">← Prev</button>
+  <button id="nextDiff" title="Next diff (F8)">Next →</button>
+  <span class="spacer"></span>
+  <button id="saveLeft">Save Left</button>
+  <button id="saveRight">Save Right</button>
+</header>
+<div class="paths">
+  <div id="leftPath" class="path">(no file)</div>
+  <div id="rightPath" class="path">(no file)</div>
+</div>
+<div class="container">
+  <div class="pane" id="leftPane"><div class="inner" id="leftInner"></div></div>
+  <div class="gutter" id="gutter"><div class="scroller" id="gutterInner"></div></div>
+  <div class="pane" id="rightPane"><div class="inner" id="rightInner"></div></div>
+</div>
+<div class="status" id="status">Open two files to begin. Tip: drag &amp; drop two files anywhere.</div>
+<div class="drop-overlay" id="dropOverlay">Drop one or two files</div>
+
+<script>
+"use strict";
+
+const LINE_HEIGHT = 18;
+
+const state = {
+  left: { name: null, lines: [], trailingNL: true, handle: null },
+  right: { name: null, lines: [], trailingNL: true, handle: null },
+  hunks: [],
+  syncing: false,
+};
+
+// ----- DOM refs -----
+const leftPane = document.getElementById("leftPane");
+const rightPane = document.getElementById("rightPane");
+const leftInner = document.getElementById("leftInner");
+const rightInner = document.getElementById("rightInner");
+const gutter = document.getElementById("gutter");
+const gutterInner = document.getElementById("gutterInner");
+const statusBar = document.getElementById("status");
+const leftPathEl = document.getElementById("leftPath");
+const rightPathEl = document.getElementById("rightPath");
+const dropOverlay = document.getElementById("dropOverlay");
+
+// ----- Diff algorithm: LCS DP -> matching blocks -> opcodes ----------
+function matchingBlocks(a, b) {
+  const n = a.length, m = b.length;
+  if (n === 0 || m === 0) return [[n, m, 0]];
+
+  // Use a 1D rolling array to save memory.
+  let prev = new Int32Array(m + 1);
+  let curr = new Int32Array(m + 1);
+  // We need the full table for backtracking. Allocate full DP only if small
+  // enough; otherwise warn and bail to a coarse single-block opcode.
+  const cells = (n + 1) * (m + 1);
+  if (cells > 16_000_000) {
+    return [[0, 0, 0], [n, m, 0]];
+  }
+  const dp = new Int32Array(cells);
+  const W = m + 1;
+  for (let i = 1; i <= n; i++) {
+    const ai = a[i - 1];
+    const rowPrev = (i - 1) * W;
+    const row = i * W;
+    for (let j = 1; j <= m; j++) {
+      if (ai === b[j - 1]) {
+        dp[row + j] = dp[rowPrev + j - 1] + 1;
+      } else {
+        const up = dp[rowPrev + j];
+        const left = dp[row + j - 1];
+        dp[row + j] = up >= left ? up : left;
+      }
+    }
+  }
+
+  const blocks = [];
+  let i = n, j = m, cur = null;
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) {
+      if (cur && cur[0] === i && cur[1] === j) {
+        cur[0] = i - 1; cur[1] = j - 1; cur[2]++;
+      } else {
+        if (cur) blocks.push(cur);
+        cur = [i - 1, j - 1, 1];
+      }
+      i--; j--;
+    } else if (dp[(i - 1) * W + j] >= dp[i * W + (j - 1)]) {
+      if (cur) { blocks.push(cur); cur = null; }
+      i--;
+    } else {
+      if (cur) { blocks.push(cur); cur = null; }
+      j--;
+    }
+  }
+  if (cur) blocks.push(cur);
+  blocks.reverse();
+  blocks.push([n, m, 0]);
+  return blocks;
+}
+
+function getOpcodes(a, b) {
+  const blocks = matchingBlocks(a, b);
+  const ops = [];
+  let i = 0, j = 0;
+  for (const [ai, bj, size] of blocks) {
+    if (ai > i && bj > j)      ops.push(["replace", i, ai, j, bj]);
+    else if (ai > i)           ops.push(["delete",  i, ai, j, bj]);
+    else if (bj > j)           ops.push(["insert",  i, ai, j, bj]);
+    if (size) ops.push(["equal", ai, ai + size, bj, bj + size]);
+    i = ai + size; j = bj + size;
+  }
+  return ops;
+}
+
+// ----- Rendering -----
+function escapeHTML(s) {
+  return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+
+function recompute() {
+  const a = state.left.lines, b = state.right.lines;
+  const ops = getOpcodes(a, b);
+
+  const leftRows = [];
+  const rightRows = [];
+  state.hunks = [];
+
+  let displayRow = 0; // 0-based row index
+
+  for (const [tag, i1, i2, j1, j2] of ops) {
+    const leftChunk = a.slice(i1, i2);
+    const rightChunk = b.slice(j1, j2);
+    const n = Math.max(leftChunk.length, rightChunk.length);
+    if (n === 0) continue;
+
+    const displayStart = displayRow;
+
+    for (let k = 0; k < n; k++) {
+      const hasL = k < leftChunk.length;
+      const hasR = k < rightChunk.length;
+      const lineTag = tag;
+
+      const lClass = !hasL ? "pad"
+        : (tag === "equal" ? "equal"
+          : tag === "delete" ? "delete"
+          : tag === "insert" ? "pad"
+          : "replace");
+      const rClass = !hasR ? "pad"
+        : (tag === "equal" ? "equal"
+          : tag === "insert" ? "insert"
+          : tag === "delete" ? "pad"
+          : "replace");
+
+      const lLineNum = hasL ? (i1 + k + 1) : "";
+      const rLineNum = hasR ? (j1 + k + 1) : "";
+
+      leftRows.push(
+        `<div class="line ${lClass}"><span class="lineno">${lLineNum}</span>` +
+        `<span class="content">${hasL ? escapeHTML(leftChunk[k]) : ""}</span></div>`
+      );
+      rightRows.push(
+        `<div class="line ${rClass}"><span class="lineno">${rLineNum}</span>` +
+        `<span class="content">${hasR ? escapeHTML(rightChunk[k]) : ""}</span></div>`
+      );
+      displayRow++;
+    }
+
+    if (tag !== "equal") {
+      state.hunks.push({
+        tag, i1, i2, j1, j2,
+        displayStart,
+        displayEnd: displayRow,
+      });
+    }
+  }
+
+  leftInner.innerHTML = leftRows.join("");
+  rightInner.innerHTML = rightRows.join("");
+
+  const totalH = displayRow * LINE_HEIGHT;
+  gutterInner.style.height = totalH + "px";
+  renderGutter();
+
+  const n = state.hunks.length;
+  if (a.length === 0 && b.length === 0) {
+    statusBar.textContent = "Open two files to begin. Tip: drag & drop files.";
+  } else if (n === 0) {
+    statusBar.textContent = "Files are identical.";
+  } else {
+    statusBar.textContent =
+      `${n} difference${n === 1 ? "" : "s"}. ` +
+      `Click → to push left into right, ← to push right into left.`;
+  }
+}
+
+function renderGutter() {
+  const html = state.hunks.map((h, idx) => {
+    const top = h.displayStart * LINE_HEIGHT;
+    const height = (h.displayEnd - h.displayStart) * LINE_HEIGHT;
+    return `<div class="hunk-marker" style="top:${top}px;height:${height}px">
+      <span class="arrow right" data-idx="${idx}" data-dir="r" title="Push left into right">→</span>
+      <span class="arrow left"  data-idx="${idx}" data-dir="l" title="Push right into left">←</span>
+    </div>`;
+  }).join("");
+  gutterInner.innerHTML = html;
+}
+
+// ----- Merge actions -----
+function mergeToRight(idx) {
+  const h = state.hunks[idx];
+  if (!h) return;
+  const repl = state.left.lines.slice(h.i1, h.i2);
+  state.right.lines = state.right.lines.slice(0, h.j1)
+    .concat(repl, state.right.lines.slice(h.j2));
+  recompute();
+}
+function mergeToLeft(idx) {
+  const h = state.hunks[idx];
+  if (!h) return;
+  const repl = state.right.lines.slice(h.j1, h.j2);
+  state.left.lines = state.left.lines.slice(0, h.i1)
+    .concat(repl, state.left.lines.slice(h.i2));
+  recompute();
+}
+
+gutterInner.addEventListener("click", (e) => {
+  const t = e.target;
+  if (!t.classList.contains("arrow")) return;
+  const idx = parseInt(t.dataset.idx, 10);
+  if (t.dataset.dir === "r") mergeToRight(idx);
+  else mergeToLeft(idx);
+});
+
+// ----- Scroll sync -----
+function syncScroll(source) {
+  if (state.syncing) return;
+  state.syncing = true;
+  const y = source.scrollTop;
+  if (source !== leftPane) leftPane.scrollTop = y;
+  if (source !== rightPane) rightPane.scrollTop = y;
+  gutter.scrollTop = y;
+  state.syncing = false;
+}
+leftPane.addEventListener("scroll", () => syncScroll(leftPane));
+rightPane.addEventListener("scroll", () => syncScroll(rightPane));
+
+// ----- Navigation -----
+function jumpToHunk(idx) {
+  if (idx < 0 || idx >= state.hunks.length) return;
+  const y = state.hunks[idx].displayStart * LINE_HEIGHT;
+  leftPane.scrollTop = y - 40;
+}
+function currentHunkIndex() {
+  const y = leftPane.scrollTop;
+  for (let i = 0; i < state.hunks.length; i++) {
+    if (state.hunks[i].displayStart * LINE_HEIGHT >= y - 4) return i;
+  }
+  return -1;
+}
+document.getElementById("nextDiff").addEventListener("click", () => {
+  if (!state.hunks.length) return;
+  const cur = currentHunkIndex();
+  const next = cur < 0 ? 0 : Math.min(cur + 1, state.hunks.length - 1);
+  jumpToHunk(next);
+});
+document.getElementById("prevDiff").addEventListener("click", () => {
+  if (!state.hunks.length) return;
+  const cur = currentHunkIndex();
+  const prev = cur < 0 ? state.hunks.length - 1 : Math.max(cur - 1, 0);
+  jumpToHunk(prev);
+});
+
+// ----- File I/O -----
+function parseContent(text) {
+  const trailingNL = text.endsWith("\n") || text === "";
+  return { lines: text.split(/\r?\n/).slice(0, trailingNL ? -1 : undefined), trailingNL };
+}
+
+async function pickAndLoad(side) {
+  if (window.showOpenFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [{ description: "Text", accept: { "text/*": [] } }],
+      });
+      const file = await handle.getFile();
+      const text = await file.text();
+      const parsed = parseContent(text);
+      state[side].name = file.name;
+      state[side].lines = parsed.lines;
+      state[side].trailingNL = parsed.trailingNL;
+      state[side].handle = handle;
+      setPathLabel(side, file.name);
+      recompute();
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      console.warn(err);
+    }
+  }
+  // Fallback: invisible file input
+  const input = document.createElement("input");
+  input.type = "file";
+  input.addEventListener("change", async () => {
+    const f = input.files[0];
+    if (!f) return;
+    const text = await f.text();
+    const parsed = parseContent(text);
+    state[side].name = f.name;
+    state[side].lines = parsed.lines;
+    state[side].trailingNL = parsed.trailingNL;
+    state[side].handle = null;
+    setPathLabel(side, f.name);
+    recompute();
+  });
+  input.click();
+}
+
+function setPathLabel(side, name) {
+  const el = side === "left" ? leftPathEl : rightPathEl;
+  el.textContent = name;
+  el.title = name;
+}
+
+async function saveSide(side) {
+  const s = state[side];
+  if (!s.name) {
+    alert(`No ${side} file loaded.`);
+    return;
+  }
+  let content = s.lines.join("\n");
+  if (s.trailingNL && s.lines.length) content += "\n";
+
+  if (s.handle && s.handle.createWritable) {
+    try {
+      const writable = await s.handle.createWritable();
+      await writable.write(content);
+      await writable.close();
+      statusBar.textContent = `Saved ${side} → ${s.name}`;
+      return;
+    } catch (err) {
+      console.warn("In-place save failed; falling back to download.", err);
+    }
+  }
+
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: s.name });
+      const writable = await handle.createWritable();
+      await writable.write(content);
+      await writable.close();
+      s.handle = handle;
+      s.name = handle.name;
+      setPathLabel(side, s.name);
+      statusBar.textContent = `Saved ${side} → ${s.name}`;
+      return;
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      console.warn(err);
+    }
+  }
+
+  // Last resort: download
+  const blob = new Blob([content], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = s.name;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  statusBar.textContent = `Downloaded ${s.name} (browser cannot overwrite original; replace it manually).`;
+}
+
+document.getElementById("openLeft").addEventListener("click", () => pickAndLoad("left"));
+document.getElementById("openRight").addEventListener("click", () => pickAndLoad("right"));
+document.getElementById("saveLeft").addEventListener("click", () => saveSide("left"));
+document.getElementById("saveRight").addEventListener("click", () => saveSide("right"));
+document.getElementById("refresh").addEventListener("click", recompute);
+
+// ----- Drag & drop -----
+let dragDepth = 0;
+document.addEventListener("dragenter", (e) => {
+  e.preventDefault();
+  dragDepth++;
+  dropOverlay.classList.add("show");
+});
+document.addEventListener("dragover", (e) => e.preventDefault());
+document.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropOverlay.classList.remove("show");
+});
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  dropOverlay.classList.remove("show");
+  const files = Array.from(e.dataTransfer.files).slice(0, 2);
+  for (let i = 0; i < files.length; i++) {
+    const side = i === 0 ? "left" : "right";
+    const text = await files[i].text();
+    const parsed = parseContent(text);
+    state[side].name = files[i].name;
+    state[side].lines = parsed.lines;
+    state[side].trailingNL = parsed.trailingNL;
+    state[side].handle = null;
+    setPathLabel(side, files[i].name);
+  }
+  recompute();
+});
+
+// ----- Keyboard shortcuts -----
+document.addEventListener("keydown", (e) => {
+  if (e.key === "F8" && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById("nextDiff").click();
+  } else if (e.key === "F8" && e.shiftKey) {
+    e.preventDefault();
+    document.getElementById("prevDiff").click();
+  } else if ((e.ctrlKey || e.metaKey) && e.key === "s" && !e.shiftKey) {
+    e.preventDefault();
+    saveSide("left");
+  } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "S") {
+    e.preventDefault();
+    saveSide("right");
+  }
+});
+
+// Initial render (empty)
+recompute();
+</script>
+</body>
+</html>
