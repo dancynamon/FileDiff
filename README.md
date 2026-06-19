@@ -5,9 +5,24 @@ external dependencies.
 
 ## Run
 
+The shebang and exec bit are set, so just run it directly:
+
 ```
-python3 filediff.py                 # open empty, pick files from File menu
-python3 filediff.py left.txt right.txt   # open two files directly
+./filediff                          # open empty, pick files from File menu
+./filediff left.txt right.txt       # open two files directly
+```
+
+To install as a system command, drop it on your `PATH`:
+
+```
+ln -s "$PWD/filediff" ~/.local/bin/filediff
+filediff left.txt right.txt
+```
+
+Or invoke via the interpreter explicitly:
+
+```
+python3 filediff left.txt right.txt
 ```
 
 ## Features
