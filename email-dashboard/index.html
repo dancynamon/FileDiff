@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Inbox Constellation — email + connected platforms</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a23;
+    --panel-2: #1e222d;
+    --border: #2a2f3c;
+    --text: #e7e9ee;
+    --muted: #9aa3b2;
+    --faint: #5d6675;
+    --accent: #6366f1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    overflow: hidden;
+  }
+
+  /* ---------- App shell ---------- */
+  .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  .topbar {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #191d27, #15181f);
+  }
+  .logo { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .2px; }
+  .logo .dot { width: 11px; height: 11px; border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #818cf8, #4f46e5);
+    box-shadow: 0 0 12px #6366f1aa; }
+  .topbar .sub { color: var(--faint); font-size: 12px; }
+  .topbar .spacer { flex: 1; }
+  .legend { display: flex; gap: 14px; align-items: center; }
+  .legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 3px; }
+
+  .main { display: grid; grid-template-columns: 320px 1fr; min-height: 0; }
+
+  /* ---------- Inbox list ---------- */
+  .inbox { border-right: 1px solid var(--border); background: var(--panel); overflow-y: auto; }
+  .inbox-head { padding: 14px 16px 8px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: .8px; color: var(--faint); }
+  .email-item {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    cursor: pointer; position: relative; transition: background .12s;
+  }
+  .email-item:hover { background: var(--panel-2); }
+  .email-item.active { background: #20263a; }
+  .email-item.active::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+  .email-row1 { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; flex: none;
+    display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .from { font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .when { font-size: 11px; color: var(--faint); flex: none; }
+  .subj { font-size: 13px; margin: 0 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .snip { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden; }
+  .badges { position: absolute; right: 12px; bottom: 10px; display: flex; gap: 4px; }
+  .pill { width: 16px; height: 16px; border-radius: 4px; font-size: 9px; font-weight: 700;
+    display: grid; place-items: center; color: #fff; }
+  .unread-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+
+  /* ---------- Constellation canvas ---------- */
+  .stage { position: relative; overflow: auto; background:
+      radial-gradient(circle at 20% 30%, #181c28 0, var(--bg) 60%);
+  }
+  #wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+  .stage-inner { position: relative; z-index: 2; display: grid;
+    grid-template-columns: 380px 1fr; gap: 40px; padding: 40px; min-height: 100%; align-content: start; }
+
+  /* Email card (the anchor) */
+  .email-card { background: linear-gradient(180deg, #1b1f2b, #161922);
+    border: 1px solid var(--border); border-radius: 14px; padding: 20px;
+    box-shadow: 0 10px 40px #0008; align-self: start; position: sticky; top: 40px; }
+  .email-card .ec-head { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
+  .email-card .ec-from { font-weight: 700; font-size: 15px; }
+  .email-card .ec-email { color: var(--muted); font-size: 12px; }
+  .email-card h2 { font-size: 17px; margin: 4px 0 14px; line-height: 1.35; }
+  .email-card .ec-body { color: #c7cdda; font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+    max-height: 320px; overflow-y: auto; padding-right: 6px; }
+  .email-card .ec-meta { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+    color: var(--faint); font-size: 12px; display: flex; gap: 14px; }
+  .anchor-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+    color: var(--accent); border: 1px solid #6366f155; background: #6366f115;
+    padding: 3px 9px; border-radius: 20px; margin-bottom: 10px; }
+
+  /* Platform groups + cards */
+  .groups { display: flex; flex-direction: column; gap: 26px; }
+  .group-title { display: flex; align-items: center; gap: 8px; font-size: 12px;
+    text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 12px; }
+  .group-title .gicon { width: 18px; height: 18px; border-radius: 5px; display: grid;
+    place-items: center; color: #fff; font-weight: 700; font-size: 11px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .node-card { background: var(--panel); border: 1px solid var(--border); border-left-width: 3px;
+    border-radius: 10px; padding: 12px 14px; cursor: pointer; transition: transform .12s, box-shadow .12s, border-color .12s; }
+  .node-card:hover { transform: translateY(-2px); box-shadow: 0 8px 22px #0006; }
+  .node-card.dim { opacity: .28; }
+  .nc-type { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--faint); margin-bottom: 3px; }
+  .nc-title { font-weight: 650; font-size: 14px; margin-bottom: 4px; }
+  .nc-sub { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .nc-meta { font-size: 11px; color: var(--faint); }
+
+  .empty { display: grid; place-items: center; height: 100%; color: var(--faint); }
+  .count-chip { font-size: 11px; color: var(--faint); background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 20px; padding: 2px 9px; margin-left: auto; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #2c313e; border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="logo"><span class="dot"></span> Inbox Constellation</div>
+    <span class="sub">your inbox, wired to every platform the customer touches</span>
+    <div class="spacer"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="main">
+    <div class="inbox">
+      <div class="inbox-head">Inbox</div>
+      <div id="emailList"></div>
+    </div>
+
+    <div class="stage" id="stage">
+      <svg id="wires"></svg>
+      <div class="stage-inner" id="stageInner">
+        <div class="empty">Select an email to see its connections</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  const SVGNS = "http://www.w3.org/2000/svg";
+  let activeId = null;
+
+  // ----- Legend -----
+  const legend = document.getElementById("legend");
+  Object.values(PLATFORMS).forEach(p => {
+    const el = document.createElement("div");
+    el.className = "item";
+    el.innerHTML = `<span class="swatch" style="background:${p.color}"></span>${p.name}`;
+    legend.appendChild(el);
+  });
+
+  // ----- Inbox list -----
+  const list = document.getElementById("emailList");
+  EMAILS.forEach(em => {
+    const item = document.createElement("div");
+    item.className = "email-item";
+    item.dataset.id = em.id;
+    const platforms = [...new Set(em.links.map(id => NODES[id].platform))];
+    const pills = platforms.map(pk => {
+      const p = PLATFORMS[pk];
+      return `<span class="pill" style="background:${p.color}" title="${p.name}">${p.short}</span>`;
+    }).join("");
+    item.innerHTML = `
+      <div class="email-row1">
+        ${em.unread ? '<span class="unread-dot"></span>' : ''}
+        <span class="avatar" style="background:${em.avatarColor}">${initials(em.from)}</span>
+        <span class="from">${em.from}</span>
+        <span class="when">${em.time}</span>
+      </div>
+      <p class="subj" style="${em.unread ? 'font-weight:700' : ''}">${em.subject}</p>
+      <p class="snip">${em.snippet}</p>
+      <div class="badges">${pills}</div>`;
+    item.addEventListener("click", () => selectEmail(em.id));
+    list.appendChild(item);
+  });
+
+  function initials(name) {
+    return name.replace(/\(.*?\)/g, "").trim().split(/\s+/).slice(0, 2).map(w => w[0]).join("").toUpperCase();
+  }
+
+  // ----- Select + render constellation -----
+  function selectEmail(id) {
+    activeId = id;
+    document.querySelectorAll(".email-item").forEach(n =>
+      n.classList.toggle("active", n.dataset.id === id));
+    const em = EMAILS.find(e => e.id === id);
+    const inner = document.getElementById("stageInner");
+
+    // Group linked nodes by platform, in legend order
+    const byPlatform = {};
+    em.links.forEach(nid => {
+      const node = NODES[nid];
+      (byPlatform[node.platform] ||= []).push({ id: nid, ...node });
+    });
+
+    const groupsHtml = Object.keys(PLATFORMS)
+      .filter(pk => byPlatform[pk])
+      .map(pk => {
+        const p = PLATFORMS[pk];
+        const cards = byPlatform[pk].map(n => `
+          <div class="node-card" data-node="${n.id}" style="border-left-color:${p.color}">
+            <div class="nc-type">${n.type}</div>
+            <div class="nc-title">${n.title}</div>
+            <div class="nc-sub">${n.subtitle}</div>
+            <div class="nc-meta">${n.meta}</div>
+          </div>`).join("");
+        return `
+          <div class="group" data-platform="${pk}">
+            <div class="group-title">
+              <span class="gicon" style="background:${p.color}">${p.glyph}</span>${p.name}
+              <span class="count-chip">${byPlatform[pk].length}</span>
+            </div>
+            <div class="cards">${cards}</div>
+          </div>`;
+      }).join("");
+
+    inner.innerHTML = `
+      <div class="email-card" id="emailCard">
+        <div class="anchor-tag">● Email</div>
+        <div class="ec-head">
+          <span class="avatar" style="width:40px;height:40px;font-size:15px;background:${em.avatarColor}">${initials(em.from)}</span>
+          <div>
+            <div class="ec-from">${em.from}</div>
+            <div class="ec-email">${em.fromEmail}</div>
+          </div>
+        </div>
+        <h2>${em.subject}</h2>
+        <div class="ec-body">${em.body}</div>
+        <div class="ec-meta"><span>${em.company}</span><span>${em.date} · ${em.time}</span></div>
+      </div>
+      <div class="groups">${groupsHtml}</div>`;
+
+    // Hover a card -> highlight just that wire/card
+    inner.querySelectorAll(".node-card").forEach(card => {
+      card.addEventListener("mouseenter", () => focusNode(card.dataset.node));
+      card.addEventListener("mouseleave", () => focusNode(null));
+    });
+
+    requestAnimationFrame(() => drawWires(em));
+  }
+
+  // ----- Draw SVG connectors from the email card to each node card -----
+  function drawWires(em) {
+    const svg = document.getElementById("wires");
+    const stage = document.getElementById("stage");
+    const card = document.getElementById("emailCard");
+    if (!card) return;
+    svg.innerHTML = "";
+
+    const sr = stage.getBoundingClientRect();
+    svg.setAttribute("viewBox", `0 0 ${stage.clientWidth} ${stage.clientHeight}`);
+
+    const cr = card.getBoundingClientRect();
+    const sx = cr.right - sr.left + stage.scrollLeft;
+    const syBase = cr.top - sr.top + stage.scrollTop;
+
+    em.links.forEach((nid, i) => {
+      const target = document.querySelector(`.node-card[data-node="${nid}"]`);
+      if (!target) return;
+      const tr = target.getBoundingClientRect();
+      const tx = tr.left - sr.left + stage.scrollLeft;
+      const ty = tr.top - sr.top + stage.scrollTop + tr.height / 2;
+      // Fan the start points down the right edge of the email card
+      const sy = syBase + 40 + (i + 1) * ((cr.height - 60) / (em.links.length + 1));
+      const color = PLATFORMS[NODES[nid].platform].color;
+
+      const mx = (sx + tx) / 2;
+      const path = document.createElementNS(SVGNS, "path");
+      path.setAttribute("d", `M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ty}, ${tx} ${ty}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", color);
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("stroke-opacity", "0.55");
+      path.setAttribute("data-wire", nid);
+      svg.appendChild(path);
+
+      // little endpoint dots
+      [[sx, sy], [tx, ty]].forEach(([x, y]) => {
+        const c = document.createElementNS(SVGNS, "circle");
+        c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 3);
+        c.setAttribute("fill", color); c.setAttribute("data-wire", nid);
+        svg.appendChild(c);
+      });
+    });
+  }
+
+  function focusNode(nid) {
+    const svg = document.getElementById("wires");
+    document.querySelectorAll(".node-card").forEach(c =>
+      c.classList.toggle("dim", nid && c.dataset.node !== nid));
+    svg.querySelectorAll("[data-wire]").forEach(w => {
+      const on = !nid || w.getAttribute("data-wire") === nid;
+      w.setAttribute("stroke-opacity", on ? (nid ? "1" : "0.55") : "0.1");
+      if (w.tagName === "circle") w.setAttribute("opacity", on ? "1" : "0.1");
+    });
+  }
+
+  // Redraw wires on resize/scroll so they stay attached
+  let raf;
+  function refresh() {
+    if (!activeId) return;
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => drawWires(EMAILS.find(e => e.id === activeId)));
+  }
+  window.addEventListener("resize", refresh);
+  document.getElementById("stage").addEventListener("scroll", refresh);
+
+  // Open first email by default
+  selectEmail(EMAILS[0].id);
+})();
+</script>
+</body>
+</html>
