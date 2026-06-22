@@ -24,6 +24,10 @@ Or drag the file onto a browser window. No build step, no dependencies.
 - In folder mode, the file list at the top shows every path with a status icon
   (`=` identical, `≠` differs, `←` only-left, `→` only-right). Click a row to
   open that file pair in the diff view.
+- Toggle **Match content across paths** to hash unmatched files on both sides
+  and pair them by content — finds moved/renamed files. Pairs appear with the
+  `⇄` (moved) icon showing both source and destination paths. Skips hashing
+  when sizes don't collide, so it's fast even on thousands of binary files.
 - Click `→` / `←` in the middle gutter to merge each hunk.
 - **Save Left** / **Save Right** writes back to the original file (in Chromium/Edge),
   including writing new files into a folder when one side was missing.

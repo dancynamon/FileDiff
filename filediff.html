@@ -89,6 +89,10 @@
   .file-row.status-only-left .status-icon { color: #b21f1f; }
   .file-row.status-only-right           { background: rgba(214, 255, 214, 0.55); }
   .file-row.status-only-right .status-icon { color: #1f8d1f; }
+  .file-row.status-moved                { background: rgba(176, 200, 255, 0.45); }
+  .file-row.status-moved .status-icon   { color: #0a3a8c; }
+  .file-row .moved-paths { flex: 1; overflow: hidden; }
+  .file-row .moved-paths .arrow-sep { color: #999; padding: 0 6px; }
   .file-row.selected.status-differs,
   .file-row.selected.status-only-left,
   .file-row.selected.status-only-right { background: #cfe1ff; }
@@ -214,6 +218,9 @@
     <span class="filelist-counts" id="filelistCounts"></span>
     <span style="flex:1"></span>
     <label><input type="checkbox" id="filterDiffsOnly" checked> Differences only</label>
+    <label title="Hash unmatched files on both sides and pair them by content (finds moved/renamed files)">
+      <input type="checkbox" id="crossMatchToggle"> Match content across paths
+    </label>
     <button id="closeFolderMode" style="background:#bbb; color:#222; border:1px solid #999; border-radius:3px; padding:2px 8px; font-size:11px; cursor:pointer;">Close folder mode</button>
   </div>
   <div id="filelistRows"></div>
@@ -275,6 +282,7 @@ const filelistEl = document.getElementById("filelist");
 const filelistRows = document.getElementById("filelistRows");
 const filelistCounts = document.getElementById("filelistCounts");
 const filterDiffsOnly = document.getElementById("filterDiffsOnly");
+const crossMatchToggle = document.getElementById("crossMatchToggle");
 
 // ----- Diff algorithm: LCS DP -> matching blocks -> opcodes ----------
 function matchingBlocks(a, b) {
@@ -706,7 +714,7 @@ async function refreshFolderDiff() {
   statusBar.textContent = `Comparing ${sorted.length} paths…`;
 
   const entries = [];
-  let counts = { identical: 0, differs: 0, "only-left": 0, "only-right": 0 };
+  const counts = { identical: 0, differs: 0, "only-left": 0, "only-right": 0, moved: 0 };
 
   const CONCURRENCY = 8;
   let idx = 0;
@@ -716,24 +724,135 @@ async function refreshFolderDiff() {
       const path = sorted[my];
       const le = L ? L.get(path) : null;
       const re = R ? R.get(path) : null;
-      let status;
-      try {
-        status = await compareEntries(le, re);
-      } catch (e) {
-        status = "differs"; // unreadable -> treat as differing
+      let status, leftPath = null, rightPath = null;
+      if (le && re) {
+        try { status = await compareEntries(le, re); }
+        catch { status = "differs"; }
+        leftPath = path; rightPath = path;
+      } else if (le) {
+        status = "only-left";  leftPath = path;
+      } else {
+        status = "only-right"; rightPath = path;
       }
-      entries[my] = { path, status, leftEntry: le, rightEntry: re };
+      entries[my] = { path, leftPath, rightPath, status, leftEntry: le, rightEntry: re };
       counts[status]++;
     }
   }
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   state.folderEntries = entries;
+
+  if (crossMatchToggle.checked) {
+    await crossMatchByContent(counts);
+  }
+
   renderFileList(counts);
-  statusBar.textContent =
-    `${counts.identical} identical, ${counts.differs} differ, ` +
+  const msg = `${counts.identical} identical, ${counts.differs} differ, ` +
+    (counts.moved ? `${counts.moved} moved/renamed, ` : "") +
     `${counts["only-left"]} only left, ${counts["only-right"]} only right. ` +
     `Click a file to view its diff.`;
+  statusBar.textContent = msg;
+}
+
+// ----- Cross-path content matching (find moved/renamed files) -----
+async function hashEntry(entry) {
+  if (entry._hash) return entry._hash;
+  const file = await entryToFile(entry);
+  if (file.size === 0) {
+    entry._hash = "empty";
+    entry._size = 0;
+    return entry._hash;
+  }
+  if (file.size > 256 * 1024 * 1024) {
+    entry._hash = null;
+    entry._size = file.size;
+    return null;
+  }
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-1", buf);
+  const u8 = new Uint8Array(digest);
+  let hex = "";
+  for (let i = 0; i < u8.length; i++) hex += u8[i].toString(16).padStart(2, "0");
+  entry._hash = hex;
+  entry._size = file.size;
+  return hex;
+}
+
+async function entrySize(entry) {
+  if (entry._size != null) return entry._size;
+  const file = await entryToFile(entry);
+  entry._size = file.size;
+  return entry._size;
+}
+
+async function crossMatchByContent(counts) {
+  const onlyLeft  = state.folderEntries.filter(e => e.status === "only-left");
+  const onlyRight = state.folderEntries.filter(e => e.status === "only-right");
+  if (!onlyLeft.length || !onlyRight.length) return;
+
+  // Phase A: size bucketing. Files with no size-match on the other side
+  // cannot be content-matched — skip them to avoid pointless hashing.
+  statusBar.textContent = `Cross-path match: bucketing ${onlyLeft.length + onlyRight.length} files by size…`;
+  const leftBySize = new Map();
+  for (const e of onlyLeft) {
+    const sz = await entrySize(e.leftEntry);
+    if (!leftBySize.has(sz)) leftBySize.set(sz, []);
+    leftBySize.get(sz).push(e);
+  }
+  const rightBySize = new Map();
+  for (const e of onlyRight) {
+    const sz = await entrySize(e.rightEntry);
+    if (!rightBySize.has(sz)) rightBySize.set(sz, []);
+    rightBySize.get(sz).push(e);
+  }
+
+  // Phase B: for sizes present on both sides, hash and pair.
+  let toHash = 0;
+  for (const [sz, ls] of leftBySize) {
+    if (rightBySize.has(sz)) toHash += ls.length + rightBySize.get(sz).length;
+  }
+  if (toHash === 0) return;
+
+  statusBar.textContent = `Cross-path match: hashing ${toHash} candidate files…`;
+
+  let moved = 0;
+  for (const [sz, ls] of leftBySize) {
+    const rs = rightBySize.get(sz);
+    if (!rs) continue;
+    // Hash both side's candidates of this size
+    await Promise.all(ls.map(e => hashEntry(e.leftEntry)));
+    await Promise.all(rs.map(e => hashEntry(e.rightEntry)));
+
+    // Index left by hash
+    const leftPool = new Map();
+    for (const e of ls) {
+      const h = e.leftEntry._hash;
+      if (!h) continue;
+      if (!leftPool.has(h)) leftPool.set(h, []);
+      leftPool.get(h).push(e);
+    }
+    // Greedy pair right entries against the pool
+    for (const re of rs) {
+      const h = re.rightEntry._hash;
+      if (!h) continue;
+      const bucket = leftPool.get(h);
+      if (!bucket || !bucket.length) continue;
+      const le = bucket.shift();
+      // Mutate the right entry to a "moved" pair, mark the left for removal.
+      re.status = "moved";
+      re.leftEntry = le.leftEntry;
+      re.leftPath = le.leftPath;
+      le.status = "_paired";
+      moved++;
+    }
+  }
+
+  if (moved) {
+    state.folderEntries = state.folderEntries.filter(e => e.status !== "_paired");
+    counts.moved = (counts.moved || 0) + moved;
+    counts["only-left"]  -= moved;
+    counts["only-right"] -= moved;
+  }
 }
 
 function renderFileList(counts) {
@@ -744,24 +863,36 @@ function renderFileList(counts) {
       const icon = e.status === "identical" ? "="
                  : e.status === "differs"   ? "≠"
                  : e.status === "only-left" ? "←"
+                 : e.status === "moved"     ? "⇄"
                  : "→";
       const sel = state.currentPath === e.path ? " selected" : "";
-      return `<div class="file-row status-${e.status}${sel}" data-path="${escapeHTML(e.path)}">
+      const id  = escapeHTML(e.path);
+      const body = e.status === "moved"
+        ? `<span class="moved-paths">
+             ${escapeHTML(e.leftPath)}
+             <span class="arrow-sep">↦</span>
+             ${escapeHTML(e.rightPath)}
+           </span>`
+        : `<span class="file-path">${escapeHTML(e.path)}</span>`;
+      const label = e.status === "moved" ? "moved" : e.status.replace("-", " ");
+      return `<div class="file-row status-${e.status}${sel}" data-path="${id}">
         <span class="status-icon">${icon}</span>
-        <span class="file-path">${escapeHTML(e.path)}</span>
-        <span class="status-label">${e.status.replace("-", " ")}</span>
+        ${body}
+        <span class="status-label">${label}</span>
       </div>`;
     }).join("");
   filelistRows.innerHTML = rows ||
     `<div class="filelist-empty">No ${onlyDiffs ? "differing " : ""}files.</div>`;
   if (counts) {
-    filelistCounts.textContent =
-      `${counts.identical}= / ${counts.differs}≠ / ` +
-      `${counts["only-left"]}← / ${counts["only-right"]}→`;
+    let txt = `${counts.identical}= / ${counts.differs}≠ / ` +
+              `${counts["only-left"]}← / ${counts["only-right"]}→`;
+    if (counts.moved) txt += ` / ${counts.moved}⇄`;
+    filelistCounts.textContent = txt;
   }
 }
 
 filterDiffsOnly.addEventListener("change", () => renderFileList());
+crossMatchToggle.addEventListener("change", () => refreshFolderDiff());
 
 filelistRows.addEventListener("click", async (e) => {
   const row = e.target.closest(".file-row");
@@ -774,16 +905,19 @@ filelistRows.addEventListener("click", async (e) => {
 
 async function loadFolderEntry(entry) {
   state.currentPath = entry.path;
-  const sides = [["left", entry.leftEntry], ["right", entry.rightEntry]];
-  for (const [side, e] of sides) {
+  const sides = [
+    ["left",  entry.leftEntry,  entry.leftPath  || entry.path],
+    ["right", entry.rightEntry, entry.rightPath || entry.path],
+  ];
+  for (const [side, e, displayPath] of sides) {
     const root = state[side].dirName || "";
     if (e) {
       state[side].handle = e.handle || null;
-      await readSideFile(side, e.handle || e.file, entry.path);
-      setPathLabel(side, root + "/" + entry.path);
+      await readSideFile(side, e.handle || e.file, displayPath);
+      setPathLabel(side, root + "/" + displayPath);
     } else {
-      setMissingSide(side, entry.path);
-      setPathLabel(side, root + "/" + entry.path + "  (missing)");
+      setMissingSide(side, displayPath);
+      setPathLabel(side, root + "/" + displayPath + "  (missing)");
     }
   }
   renderFileList();
